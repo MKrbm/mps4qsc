@@ -1,7 +1,7 @@
 
 import opt_einsum as oe # type: ignore[import-untyped]
 import random
-from mpsqsc.models.opt_einsum_utils import GetSymbolFn
+from qmpsqsc.models.opt_einsum_utils import GetSymbolFn
 
 
 def test_get_symbol():

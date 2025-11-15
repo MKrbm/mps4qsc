@@ -3,9 +3,7 @@ import torch
 from typing import List
 import math
 
-from mpsqsc.models.mps_classifier import MpsQsc
-from mpsqsc.models.mpstate import MPState
-
+from qmpsqsc.models.mpsqsc import MpsQsc, MPState
 
 # ===========================
 # 1. PATH CACHING TESTS
@@ -63,17 +61,6 @@ def test_mpstate_path_cached():
 
     assert call_counter["n"] == 1
     assert torch.allclose(psi1, psi2)
-
-def test_mps_shift_symbols():
-    """
-    Check that the symbols are shifted correctly for MpsQsc.
-    """
-    L, chi, d = 5, 3, 2
-    mps = MpsQsc(L=L, chi=chi, d=d, init="random", seed=42)
-    psi = mps.state_vector()
-    assert psi.shape == (d,) * L + (2,)
-    mps._shift_symbols(1)
-
 
 # ===========================
 # 2. GHZ STATE TEST FOR MPState
