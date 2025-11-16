@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import List, Optional, Sequence, Tuple
+from abc import ABC, abstractmethod
 import math
 import torch
 import os
@@ -294,18 +295,18 @@ class MPSBase:
         self._ovlp_cache.invalidate()
 
     # ---------- Full contraction (materialize tensor) ----------
-    def _build_full_equation(self) -> str:
+    def _build_full_equation(self) -> tuple[str, dict[str, List[str] | str], GetSymbolFn]:
         """
         Build einsum eq for:
            A0(p0,b1), A1(b1,p1,b2), ..., AL-2(bL-2,pL-2,bL-1), AL-1(bL-1,pL-1[,c])
         -> p0 p1 ... pL-1 [c]
         """
-        sym = GetSymbolFn()
+        symfn = GetSymbolFn()
         L = self.L
 
-        p = [sym() for _ in range(L)]
-        b = [sym() for _ in range(L - 1)]
-        c = sym() if self.out_dim > 1 else ""
+        p = [symfn() for _ in range(L)]
+        b = [symfn() for _ in range(L - 1)]
+        c = symfn() if self.out_dim > 1 else ""
 
         pieces: List[str] = []
         pieces.append(p[0] + b[0])
@@ -317,12 +318,17 @@ class MPSBase:
         else:
             pieces.append(b[L - 2] + p[L - 1])      # (chi, d)
             eq = ",".join(pieces) + "->" + "".join(p)
-        return eq
+        syms: Dict[str, List[str] | str] = {}
+        syms["p"] = p
+        syms["b"] = b
+        if c != "":
+            syms["c"] = c
+        return eq, syms, symfn
 
     def _build_fv_path(self) -> Tuple[str, oe.Path]:
         shapes = tuple(tuple(a.shape) for a in self.As)
         if self._full_cache.shape_sig != shapes:
-            eq = self._build_full_equation()
+            eq, _, _ = self._build_full_equation()
             path, _ = oe.contract_path(eq, *self.As, optimize=self.optimize)
             self._full_cache.eq = eq
             self._full_cache.path = path
@@ -487,20 +493,9 @@ class MPSBase:
     def eval(self):
         return self.train(False)
 
-    # ---------- Utilities ----------
+    @abstractmethod
     def _clone_with_As(self, As_new: Sequence[torch.Tensor], new_chi: int | None = None) -> "MPSBase":
-        cls = self.__class__
-        # Preserve constructor semantics of subclass (MPState/MpsQsc)
-        return cls(
-            L=self.L,
-            chi=new_chi if new_chi is not None else self.chi,
-            d=self.d,
-            out_dim=self.out_dim,
-            As=[A.clone().detach() for A in As_new],
-            device=self.device,
-            dtype=self.dtype,
-            optimize=self.optimize
-        )
+        pass
 
     # ---------- Optional: bond-dimension truncation (TT-SVD) ----------
     def truncate_bond_dimension(self, new_chi: int) -> "MPSBase":

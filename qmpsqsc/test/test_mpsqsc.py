@@ -86,7 +86,7 @@ def test_canonicalize_is_isometric_chi_greater_than_d_truncate():
     """
     Check that the canonicalization is correct.
     """
-    L, chi, d = 5, 6, 4
+    L, chi, d = 5, 4, 2
     qsc = MpsQsc(L=L, chi=chi, d=d, init="random", seed=42, dtype=torch.float64)
     qs_can = qsc.canonicalize(truncate=True)
 
@@ -96,6 +96,31 @@ def test_canonicalize_is_isometric_chi_greater_than_d_truncate():
     assert torch.allclose(identity, eye)
 
     for i in range(1, L-1):
+        identity = torch.einsum("aib, aic -> bc", As_can[i], As_can[i].conj())
+        assert torch.allclose(identity, torch.eye(chi, dtype=qsc.dtype))
+    
+    norm = torch.einsum("aib, aib -> ", As_can[L-1], As_can[L-1].conj())
+    assert torch.allclose(norm, qsc.norm()**2)
+
+def test_canonicalize_is_isometric_chi_greater_than_d_truncate_large_chi():
+    """
+    Check that the canonicalization is correct.
+    """
+    L, chi, d = 7, 8, 2
+    qsc = MpsQsc(L=L, chi=chi, d=d, init="random", seed=42, dtype=torch.float64)
+    qs_can = qsc.canonicalize(truncate=True)
+
+    As_can = qs_can.As
+    identity = torch.einsum("ab, ac -> bc", As_can[0], As_can[0].conj())
+    eye = torch.eye(2, dtype=qsc.dtype)
+    assert torch.allclose(identity, eye)
+
+    As_can = qs_can.As
+    identity = torch.einsum("aib, aic -> bc", As_can[1], As_can[1].conj())
+    eye = torch.eye(4, dtype=qsc.dtype)
+    assert torch.allclose(identity, eye)
+
+    for i in range(2, L-1):
         identity = torch.einsum("aib, aic -> bc", As_can[i], As_can[i].conj())
         assert torch.allclose(identity, torch.eye(chi, dtype=qsc.dtype))
     

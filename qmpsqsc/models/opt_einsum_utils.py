@@ -1,6 +1,8 @@
 from typing import Tuple
 import opt_einsum as oe  # type: ignore[import-untyped]
 from opt_einsum.parser import _einsum_symbols_base # type: ignore[import-untyped]
+# from .mpsqsc.mpstate import MPState
+# import torch
 
 
 
@@ -60,7 +62,11 @@ class GetSymbolFn:
         """
         1. Shift `symbol_count` by `shift`.
         2. For each arg (a container of containers of ... of str), shift each
-           symbol s to get_symbol(inv_get_symbol(s) + shift), preserving structure.
+        symbol s to get_symbol(inv_get_symbol(s) + shift), preserving structure.
+
+        `s` can be:
+            - a single-character symbol (e.g. 'a', 'β'), or
+            - an einsum-style equation string (e.g. 'af,fbg,gch,hdi,ie->abcde').
 
         Returns the shifted version(s) of the provided args. Arguments
         themselves are not modified in-place.
@@ -71,12 +77,30 @@ class GetSymbolFn:
             raise ValueError(
                 f"Shift would make symbol_count negative: {self._symbol_count} + {shift}"
             )
-        self._symbol_count = new_count
 
-        # helper to shift a single symbol
+        # helper to shift a single symbol or an einsum equation
         def _shift_symbol(sym: str) -> str:
+            # Case 1: einsum-style equation string – shift each index char
+            # Example: "af,fbg,gch,hdi,ie->abcde"
+            if "->" in sym or "," in sym:
+                def _shift_char(c: str) -> str:
+                    # punctuation separators: leave unchanged
+                    if c in ",-> ":
+                        return c
+                    # everything else is treated as an index symbol
+                    i = self.inv_get_symbol(c)
+                    j = i + shift
+                    if j < 0:
+                        raise ValueError(
+                            f"Shift would make symbol index negative: {i} + {shift}"
+                        )
+                    return self.get_symbol(j)
+
+                return "".join(_shift_char(c) for c in sym)
+
+            # Case 2: single-character symbol (original behavior)
             if len(sym) != 1:
-                raise ValueError(f"Expected single-character symbol, got {sym!r}")
+                raise ValueError(f"Expected single-character symbol or einsum eq, got {sym!r}")
             i = self.inv_get_symbol(sym)
             j = i + shift
             if j < 0:
@@ -87,7 +111,7 @@ class GetSymbolFn:
 
         # recursive helper to walk through nested containers
         def _shift_container(obj):
-            # leaf: single-character string
+            # leaf: string (either a single symbol or an equation)
             if isinstance(obj, str):
                 return _shift_symbol(obj)
 
@@ -99,10 +123,7 @@ class GetSymbolFn:
             if isinstance(obj, set):
                 return {_shift_container(x) for x in obj}
             if isinstance(obj, dict):
-                return {
-                    _shift_container(k): _shift_container(v)
-                    for k, v in obj.items()
-                }
+                return {k: _shift_container(v) for k, v in obj.items()}
 
             # anything else is returned unchanged (e.g. ints, None, etc.)
             return obj
@@ -113,6 +134,12 @@ class GetSymbolFn:
         if len(args) == 1:
             return _shift_container(args[0])
         return tuple(_shift_container(a) for a in args)
+
+    
+
+
+        # build the state equation.
+
     
 class _EqAndPathCache:
     """

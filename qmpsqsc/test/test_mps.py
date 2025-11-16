@@ -308,3 +308,14 @@ def test_mpstate_norm_autograd():
     for A in mp.As:
         assert A.grad is not None
         assert torch.isfinite(A.grad).all()
+
+# def test_canonicalize_is_isometric_chi_greater_than_d_truncate_large_chi():
+#     """
+#     Check that the canonicalization is correct.
+#     """
+#     L, chi, d = 7, 8, 2
+#     mp = MPState(L=L, chi=chi, d=d, init="random", seed=42, dtype=torch.float64)
+#     mp = mp.canonicalize(truncate=True)
+
+#     for A in mp.As:
+#         print(A.shape)

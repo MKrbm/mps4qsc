@@ -35,3 +35,14 @@ class MPState(MPSBase):
         Prefer: `other.overlap(self)` (which is the same).
         """
         return other.overlap(self, conjugate_self=True)
+
+    def _clone_with_As(self, As_new: Sequence[torch.Tensor], new_chi: int | None = None) -> "MPState":
+        return MPState(
+            L=self.L,
+            chi=new_chi if new_chi is not None else self.chi,
+            d=self.d,
+            As=[A.clone().detach() for A in As_new],
+            device=self.device,
+            dtype=self.dtype,
+            optimize=self.optimize
+        )

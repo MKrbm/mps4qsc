@@ -17,7 +17,7 @@ class MpsQsc(MPSBase):
         d: int,
         As: Optional[List[torch.Tensor]] = None,
         device: Optional[torch.device | str] = None,
-        dtype: torch.dtype = torch.float32,
+        dtype: torch.dtype = torch.complex128,
         init: str = "random",
         seed: Optional[int] = None,
         optimize: str = "random-greedy",
@@ -38,3 +38,15 @@ class MpsQsc(MPSBase):
         """
         return self.overlap(state, conjugate_self=False)
 
+
+    def _clone_with_As(self, As_new: Sequence[torch.Tensor], new_chi: int | None = None) -> "MpsQsc":
+        return MpsQsc(
+            L=self.L,
+            chi=new_chi if new_chi is not None else self.chi,
+            d=self.d,
+            As=[A.clone().detach() for A in As_new],
+            device=self.device,
+            dtype=self.dtype,
+            optimize=self.optimize,
+            out_dim=self.out_dim
+        )
