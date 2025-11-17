@@ -71,12 +71,6 @@ class GetSymbolFn:
         Returns the shifted version(s) of the provided args. Arguments
         themselves are not modified in-place.
         """
-        # 1. shift internal counter
-        new_count = self._symbol_count + shift
-        if new_count < 0:
-            raise ValueError(
-                f"Shift would make symbol_count negative: {self._symbol_count} + {shift}"
-            )
 
         # helper to shift a single symbol or an einsum equation
         def _shift_symbol(sym: str) -> str:

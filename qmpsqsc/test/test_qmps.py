@@ -71,7 +71,7 @@ def test_construct_unitary_from_mpsqsc():
     mpsqsc = mpsqsc.canonicalize(truncate=True, normalize=True)
     As = mpsqsc.As
 
-    Us, last = construct_unitary_from_As(As)
+    Us, last = construct_unitary_from_As(As, merge_first_two=False)
 
     U0 = Us[0]
     assert torch.allclose(U0 @ U0.mH, torch.eye(U0.shape[1], dtype=U0.dtype))
@@ -116,8 +116,8 @@ def test_contract_circuit_with_state_partial_trace_is_density_matrix():
     d = 2
     mpsqsc = MpsQsc(L=L, chi=chi, d=d, init="random", seed=42, dtype=torch.complex128)
     mpsqsc = mpsqsc.canonicalize(truncate=True, normalize=True)
-    Us, last = construct_unitary_from_As(mpsqsc.As)
-    qmpsqsc = qMPS(L=L, chi=chi, d=d, Us=Us, last_unitary=last, init="random", seed=42)
+    Us, last = construct_unitary_from_As(mpsqsc.As, merge_first_two=True)
+    qmpsqsc = qMPS(L=L, chi=chi, d=d, Us=Us, last_unitary=last, seed=42)
     mpstate = MPState(L=L, chi=chi_state, d=d, init="random", seed=42, dtype=torch.complex128)
 
     vals = qmpsqsc._contract_circuit_with_state_partial_trace(mpstate)

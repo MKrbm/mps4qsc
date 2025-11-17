@@ -50,3 +50,29 @@ class MpsQsc(MPSBase):
             optimize=self.optimize,
             out_dim=self.out_dim
         )
+    
+    def _initialize(self, init: str = "stacked", seed: Optional[int] = None) -> List[torch.Tensor]:
+        if init not in {"stacked"}:
+            raise ValueError("init must be 'stacked'")
+        MPS_list = []
+        L = self.L
+        chi = self.chi
+        d = self.d
+        dtype = self.dtype
+        out_dim = self.out_dim
+        std = 1e-3
+        for i in range(L):
+            if i == 0:
+                core = torch.zeros(d, chi, dtype=dtype)
+                core[:] = 1
+                core += torch.normal(mean=0.0, std=std, size=core.shape)
+            elif i == L - 1:
+                core = torch.zeros(chi, d, out_dim, dtype=dtype)
+                min_dim = min(chi, d)
+                core[:min_dim, :min_dim] = torch.eye(min_dim, dtype=dtype)
+                core += torch.normal(mean=0.0, std=std, size=core.shape)
+            else:
+                core = torch.stack([torch.eye(chi, dtype=dtype)] * d).permute(1, 0, 2)
+                core += torch.normal(mean=0.0, std=std, size=core.shape)
+            MPS_list.append(core)
+        return MPS_list

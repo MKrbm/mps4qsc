@@ -20,9 +20,9 @@ def test_normalize():
     Check that the normalization is correct.
     """
     L, chi, d = 5, 3, 2
-    mps = MpsQsc(L=L, chi=chi, d=d, init="random", seed=42)
-    mps.normalize()
-    assert torch.allclose(mps.norm(), torch.tensor(1.0, dtype=mps.dtype))
+    mps = MpsQsc(L=L, chi=chi, d=d, init="random", seed=42, dtype=torch.complex128)
+    mps = mps.normalize()
+    assert torch.allclose(mps.norm(), torch.tensor(1.0, dtype=torch.float64))
 
 def test_contract_with_state():
     """

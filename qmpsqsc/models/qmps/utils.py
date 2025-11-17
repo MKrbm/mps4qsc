@@ -170,17 +170,18 @@ def embed_non_unitary(A: torch.Tensor, *, atol: float = 1e-7, rtol: float = 1e-5
 
     return U.contiguous()
 
-def construct_unitary_from_As(As: List[torch.Tensor]) -> tuple[List[torch.Tensor], torch.Tensor]:
+def construct_unitary_from_As(As: List[torch.Tensor], merge_first_two: bool = True) -> tuple[List[torch.Tensor], torch.Tensor]:
 
     Vs = [A.reshape(-1, A.shape[-1]).T for A in As]
     AL = As[-1].reshape(-1, As[-1].shape[-1])   
 
     Us = [embed_iso(V) for V in Vs[:-1]]
 
-    d = Us[0].shape[0]
-    u0 = torch.kron(Us[0].contiguous(), torch.eye(d, dtype = Us[0].dtype))
-    Us[1] = Us[1] @ u0
-    Us = Us[1:]
+    if merge_first_two:
+        d = Us[0].shape[0]
+        u0 = torch.kron(Us[0].contiguous(), torch.eye(d, dtype = Us[0].dtype))
+        Us[1] = Us[1] @ u0
+        Us = Us[1:]
 
     # SVD of last core
     U, S, V = torch.linalg.svd(AL, full_matrices=False)
