@@ -131,3 +131,31 @@ def test_contract_circuit_with_state_partial_trace_is_density_matrix():
     norm = mpstate.norm()
     assert torch.allclose(torch.trace(vals), torch.tensor(norm**2, dtype=vals.dtype))
 
+
+def test_contract_circuit_with_state_ae_same_as_mpsqsc():
+    """
+    Check that the partial trace is correct.
+    """
+    L = 5
+    chi = 4
+    chi_state = 2
+    d = 2
+    mpsqsc = MpsQsc(L=L, chi=chi, d=d, init="random", seed=42, dtype=torch.complex128)
+    mpsqsc = mpsqsc.canonicalize(truncate=True, normalize=True)
+    Us, last = construct_unitary_from_As(mpsqsc.As, merge_first_two=True)
+    qmpsqsc = qMPS(L=L, chi=chi, d=d, Us=Us, last_unitary=last, seed=42)
+    mpstate = MPState(L=L, chi=chi_state, d=d, init="random", seed=42, dtype=torch.complex128)
+
+    vals_ae = qmpsqsc._contract_circuit_with_state_ae(mpstate)
+    pred_mps = mpsqsc.contract_with_state(mpstate)
+
+    # extract diagonal parts of vals_ae
+    pred_ae = vals_ae.real.diagonal(dim1=0, dim2=1)
+    # normalize so that summation is 1
+    pred_ae = pred_ae / torch.sum(pred_ae)
+    # normalize pred_mps so that norm is 1
+    pred_mps = pred_mps / torch.linalg.norm(pred_mps)
+    pred_mps = torch.abs(pred_mps) ** 2
+
+    assert torch.allclose(pred_ae, pred_mps)
+
