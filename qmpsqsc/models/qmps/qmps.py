@@ -9,6 +9,7 @@ import opt_einsum as oe  # type: ignore[import-untyped]
 
 from ..opt_einsum_utils import GetSymbolFn, _EqAndPathCache
 from ..mpsqsc.mpstate import MPState
+from .unitary import UnitaryTensor
 
 
 class qMPS:
@@ -56,22 +57,18 @@ class qMPS:
         self.device = torch.device(device) if device is not None else torch.device("cpu")
         self.dtype = Us[0].dtype
         self.optimize = optimize
+        self._cls_cache = _EqAndPathCache()
 
         # --- FIX: default last_unitary must be (2*out_dim)×(2*out_dim) so it reshapes to (2, C, 2, C)
         if last_unitary is None:
             last_unitary = torch.eye(2 * out_dim, dtype=Us[0].dtype, device=Us[0].device)
-        self._check_unitary(last_unitary, atol=1e-7, rtol=1e-7, i=L)  # label i=L for clarity
-        self.last_unitary = last_unitary.reshape(2, out_dim, 2, out_dim)
+        self.last_unitary = UnitaryTensor(last_unitary, t_shape=(2, out_dim, 2, out_dim))
 
         # Caches for classifier contraction (equation + path)
-        self._cls_cache = _EqAndPathCache()
 
         # Store and validate the per-site unitaries; convert to 4‑leg tensors
-        self.Us = [U.clone().detach().to(self.device) for U in Us]
-        self.U4, self.ancillas, self.chis = self.validate_and_reshape_Us(Us=self.Us)
-        for U in self.U4:
-            U.requires_grad_(True)
-        self.last_unitary = self.last_unitary.requires_grad_(True)
+        U4, self.ancillas, self.chis = self.validate_and_reshape_Us(Us=Us)
+        self.U4 = [UnitaryTensor(U, t_shape=U4.shape) for U, U4 in zip(Us, U4)]
         self.weights = [torch.zeros(dim_ancilla, dtype=Us[0].dtype, device=Us[0].device) for dim_ancilla in self.ancillas]
         self.weights.append(torch.zeros(2, dtype=Us[0].dtype, device=Us[0].device))
         for w in self.weights:
@@ -171,7 +168,7 @@ class qMPS:
     # ---------------------------------------------------------------------
     def validate_and_reshape_Us(
         self,
-        Us: Optional[List[torch.Tensor]] = None,
+        Us: List[torch.Tensor],
         *,
         atol: float = 1e-7,
         rtol: float = 1e-5,
@@ -184,8 +181,6 @@ class qMPS:
           ancillas  : [a0, a1, ..., a_{L-1}]      (ancilla/output-left sizes)
           chis      : [chi0, ..., chi_{L-2}, C]   (bond/output-right sizes, last is C)
         """
-        if Us is None:
-            Us = self.Us
         if len(Us) != self.L - 1:
             raise ValueError(f"Expected L-1={self.L-1} unitaries, got {len(Us)}.")
 
@@ -310,13 +305,13 @@ class qMPS:
 
         # Tensors in the same order as eq_full:
         #   [state.As] + [state.As†] + [U4(left rail)] + [last_op] + [U4(right rail)†] + [last_op†]
-        last_operator = self.last_unitary[:, :, 0, :]  # (2, C, C) after post-select ancilla input = |0⟩
+        last_operator = self.last_unitary.tensor[:, :, 0, :]  # (2, C, C) after post-select ancilla input = |0⟩
 
         tensors = (
             [A for A in state.As] +
             [A.conj() for A in state.As] +
-            [U for U in self.U4] + [last_operator] +
-            [U.conj() for U in self.U4] + [last_operator.conj()]
+            [U.tensor for U in self.U4] + [last_operator] +
+            [U.tensor.conj() for U in self.U4] + [last_operator.conj()]
         )
 
         shape_sig = tuple(tuple(T.shape) for T in tensors)
@@ -353,12 +348,12 @@ class qMPS:
         """
         eq, path = self._build_partial_trace_path(state)
 
-        last_operator = self.last_unitary[:, :, 0, :]
+        last_operator = self.last_unitary.tensor[:, :, 0, :]
         tensors = (
             [A for A in state.As] +
             [A.conj() for A in state.As] +
-            [U for U in self.U4] + [last_operator] +
-            [U.conj() for U in self.U4] + [last_operator.conj()]
+            [U.tensor for U in self.U4] + [last_operator] +
+            [U.tensor.conj() for U in self.U4] + [last_operator.conj()]
         )
         return oe.contract(eq, *tensors, optimize=path)
 
@@ -409,13 +404,13 @@ class qMPS:
 
         # Tensors in the same order as eq_full:
         #   [state.As] + [state.As†] + [U4(left rail)] + [last_op] + [U4(right rail)†] + [last_op†]
-        last_operator = self.last_unitary[:, :, 0, :]  # (2, C, C) after post-select ancilla input = |0⟩
+        last_operator = self.last_unitary.tensor[:, :, 0, :]  # (2, C, C) after post-select ancilla input = |0⟩
 
         tensors = (
             [A for A in state.As] +
             [A.conj() for A in state.As] +
-            [U for U in self.U4] + [last_operator] +
-            [U.conj() for U in self.U4] + [last_operator.conj()] +
+            [U.tensor for U in self.U4] + [last_operator] +
+            [U.tensor.conj() for U in self.U4] + [last_operator.conj()] +
             [w for w in self.weights]
         )
 
@@ -522,12 +517,12 @@ class qMPS:
         """
         eq, path = self._build_ae_path(state)
 
-        last_operator = self.last_unitary[:, :, 0, :]
+        last_operator = self.last_unitary.tensor[:, :, 0, :]
         tensors = (
             [A for A in state.As] +
             [A.conj() for A in state.As] +
-            [U for U in self.U4] + [last_operator] +
-            [U.conj() for U in self.U4] + [last_operator.conj()] +
+            [U.tensor for U in self.U4] + [last_operator] +
+            [U.tensor.conj() for U in self.U4] + [last_operator.conj()] +
             [w for w in self.weights]
         )
         return oe.contract(eq, *tensors, optimize=path)

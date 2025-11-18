@@ -1,5 +1,6 @@
 import torch
 from typing import List
+from enum import Enum
 
 def embed_iso(V: torch.Tensor, *, atol: float = 1e-7, rtol: float = 1e-5) -> torch.Tensor:
     """
@@ -59,8 +60,6 @@ def embed_iso(V: torch.Tensor, *, atol: float = 1e-7, rtol: float = 1e-5) -> tor
     assert torch.allclose(U.mH @ U, I_N, atol=10*atol, rtol=10*rtol)
 
     return U.contiguous()
-
-import torch
 
 
 def embed_non_unitary(A: torch.Tensor, *, atol: float = 1e-7, rtol: float = 1e-5) -> torch.Tensor:
@@ -193,4 +192,14 @@ def construct_unitary_from_As(As: List[torch.Tensor], merge_first_two: bool = Tr
     last = last / torch.linalg.norm(last, ord=2)
     return Us, embed_non_unitary(last)
 
-    
+def to_probs(outputs):
+    """
+    Convert outputs into probabilities (normalize along the last dimension).
+    """
+    return outputs / outputs.sum(dim=-1, keepdim=True)
+
+class ManifoldType(Enum):
+    CANONICAL = "canonical"
+    FROBENIUS = "frobenius"
+    EXACT = "exact"
+    SPHERICAL = "spherical"

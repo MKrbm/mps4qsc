@@ -620,19 +620,31 @@ class MPSBase:
 
         return self._clone_with_As(new_As, new_chi=chi_eff)
 
-    def canonicalize(self, inplace: bool = False, normalize: bool = False, truncate: bool = False) -> "MPSBase":
+    def canonicalize(
+        self,
+        inplace: bool = False,
+        normalize: bool = False,
+        truncate: bool = False,
+    ) -> "MPSBase":
         """
         Left-canonicalize the MPS (0 -> L-1) via a QR sweep.
 
-        - All cores keep their original shapes: first (d, chi),
-        interiors (chi, d, chi), last (chi, d[, C]) if truncate=False.
-        - No truncation: if the exact rank r < chi at some bond, we zero-pad
-        to keep uniform bond dimension `self.chi`.
-        - If truncate=True, we *shrink* each bond to its effective rank r
-        (i.e. we drop directions with zero singular values), so bond
-        dimensions can vary across sites.
-        - The overall tensor is preserved by passing each R factor to the
-        next core.
+        - If truncate=False:
+            shapes are fixed:
+            A[0]     : (d, chi)
+            A[1..L-2]: (chi, d, chi)
+            A[L-1]   : (chi, d[, C])
+            and we pad with zeros when the effective rank is smaller than chi.
+
+        - If truncate=True:
+            we detect numerical rank deficiencies at each bond and
+            *shrink* the bond dimension to the effective rank. Shapes become
+            variable:
+            A[0]     : (d, r0)
+            A[1]     : (r0, d, r1)
+            ...
+            A[L-1]   : (r_{L-2}, d[, C])
+            while remaining left-canonical.
 
         Parameters
         ----------
@@ -641,8 +653,7 @@ class MPSBase:
         normalize : bool, default False
             If True, normalize the last tensor to have unit Frobenius norm.
         truncate : bool, default False
-            If True, shrink each bond to its effective rank instead of
-            padding back to `self.chi`.
+            If True, use an effective-rank criterion on R to shrink bonds.
 
         Returns
         -------
@@ -651,80 +662,100 @@ class MPSBase:
         L, d, chi, C = self.L, self.d, self.chi, self.out_dim
         device, dtype = self.device, self.dtype
 
-        def _qr(M: torch.Tensor):
-            # Reduced QR, with fallback for older torch versions
-            try:
-                Q, R = torch.linalg.qr(M, mode="reduced")
-            except Exception:
-                Q, R = torch.qr(M, some=True)  # type: ignore[attr-defined]
-            return Q, R
+
+        def _qr_truncated(M: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, int]:
+            """
+            QR + numerical rank detection from diag(R).
+
+            Returns
+            -------
+            Q_eff : (m, r_eff)
+            R_eff : (r_eff, n)
+            r_eff : int
+            """
+            Q, R = torch.linalg.qr(M, mode="reduced")
+            diag = torch.diagonal(R)          # (k,)
+            abs_diag = diag.abs()
+            max_diag = abs_diag.max()
+
+            # Heuristic tolerance: similar to LAPACK-style
+            if max_diag == 0:
+                # Matrix is numerically all zeros; keep rank 1 to avoid degenerate shapes.
+                r_eff = 1
+            else:
+                eps = torch.finfo(M.dtype).eps
+                tol = max(M.shape) * eps * max_diag
+                r_eff = int((abs_diag > tol).sum().item())
+                if r_eff == 0:
+                    r_eff = 1
+
+            Q_eff = Q[:, :r_eff]
+            R_eff = R[:r_eff, :]
+            return Q_eff, R_eff, r_eff
 
         # Work on copies to preserve autograd flags later
         src_As = [A.to(device, dtype) for A in self.As]
         req = [A.requires_grad for A in src_As]
 
         with torch.no_grad():
-            # We’ll fill Bs with either padded (uniform chi) or truncated (varying) cores.
-            Bs: list[torch.Tensor] = [torch.empty(0, 0, device=device, dtype=dtype) for _ in range(L)]  # type: ignore[assignment]
+            Bs: list[torch.Tensor] = [torch.zeros(1, 1, device=device, dtype=dtype) for _ in range(L)]  # type: ignore[assignment]
 
-            # ---- Site 0: A0 (d, chi) -> Q(d, r0), push R(r0, chi) right ----
-            Q0, R = _qr(src_As[0])              # Q0: (d, r0), R: (r0, chi)
-            r_prev = Q0.shape[1]
-
+            # ---- Site 0: A0 (d, chi) -> Q0(d, r0), push R(r0, chi) right ----
             if truncate:
-                # Keep the effective rank r0
-                Bs[0] = Q0                      # (d, r0)
+                Q0, R, r_prev = _qr_truncated(src_As[0])  # Q0: (d, r0)
+                Bs[0] = Q0                                 # (d, r0)
             else:
+                Q0, R = torch.linalg.qr(src_As[0], mode="reduced")                     # Q0: (d, k), k=min(d,chi)
+                r_prev = Q0.shape[1]
                 B0 = torch.zeros(d, chi, device=device, dtype=dtype)
                 B0[:, :r_prev] = Q0
                 Bs[0] = B0
 
-            max_bond = r_prev  # track maximum bond dimension we see
+            max_bond = r_prev
 
             # ---- Sweep interiors 1..L-2 ----
             for i in range(1, L - 1):
-                # Absorb incoming R on the left bond, then QR on (r_prev*d) x chi
-                Ai = src_As[i]
-                # left_absorbed: (r_prev, d, chi)
-                left_absorbed = torch.einsum("ra,adc->rdc", R, Ai)
-                M = left_absorbed.reshape(r_prev * d, chi)   # (r_prev*d, chi)
-                Q, R = _qr(M)                                # Q: (r_prev*d, r), R: (r, chi)
-                r = Q.shape[1]
+                Ai = src_As[i]                            # (chi, d, chi)
+
+                # Absorb incoming R on the left bond: R (r_prev, chi)
+                left_absorbed = torch.einsum("ra,adc->rdc", R, Ai)  # (r_prev, d, chi)
+                M = left_absorbed.reshape(r_prev * d, chi)          # (r_prev*d, chi)
 
                 if truncate:
-                    # Keep the smaller right bond r
-                    Bi = Q.reshape(r_prev, d, r)             # (r_prev, d, r)
+                    Q, R, r = _qr_truncated(M)                      # Q: (r_prev*d, r)
+                    Bi = Q.reshape(r_prev, d, r)                    # (r_prev, d, r)
                 else:
+                    Q, R = torch.linalg.qr(M, mode="reduced")                                   # Q: (r_prev*d, k)
+                    r = Q.shape[1]
                     Bi = torch.zeros(chi, d, chi, device=device, dtype=dtype)
                     Bi[:r_prev, :, :r] = Q.reshape(r_prev, d, r)
 
                 Bs[i] = Bi
                 max_bond = max(max_bond, r)
-                r_prev = r  # active left rank going into the next site
+                r_prev = r
 
             # ---- Last site: absorb final R on its left bond ----
             last = src_As[L - 1]
             if C == 1:
                 # last: (chi, d)
-                absorbed = torch.einsum("rb,bd->rd", R, last)  # (r_prev, d)
+                absorbed = torch.einsum("rb,bd->rd", R, last)       # (r_prev, d)
                 if truncate:
-                    BL = absorbed                              # (r_prev, d)
+                    BL = absorbed                                   # (r_prev, d)
                 else:
                     BL = torch.zeros(chi, d, device=device, dtype=dtype)
                     BL[:r_prev, :] = absorbed
             else:
                 # last: (chi, d, C)
-                absorbed = torch.einsum("rb,bdc->rdc", R, last)  # (r_prev, d, C)
+                absorbed = torch.einsum("rb,bdc->rdc", R, last)     # (r_prev, d, C)
                 if truncate:
-                    BL = absorbed                                # (r_prev, d, C)
+                    BL = absorbed                                   # (r_prev, d, C)
                 else:
                     BL = torch.zeros(chi, d, C, device=device, dtype=dtype)
                     BL[:r_prev, :, :] = absorbed
 
             Bs[L - 1] = BL
-            # max_bond at this point is the maximum internal bond dimension encountered
 
-            # Optional normalization on the last core
+            # Optional normalization
             if normalize:
                 norm = torch.linalg.norm(Bs[L - 1])
                 if norm > 0:
@@ -732,14 +763,12 @@ class MPSBase:
 
             # Shape validation
             if truncate:
-                # Lightweight variable-bond consistency check
-                # First: (d, r0)
+                # variable-bond consistency
                 B0 = Bs[0]
                 if B0.ndim != 2 or B0.shape[0] != d:
                     raise ValueError(f"Bs[0] must have shape (d, r0), got {tuple(B0.shape)}.")
                 left_dim = B0.shape[1]
 
-                # Interiors: (chi_left, d, chi_right)
                 for i in range(1, L - 1):
                     Bi = Bs[i]
                     if Bi.ndim != 3 or Bi.shape[0] != left_dim or Bi.shape[1] != d:
@@ -749,7 +778,6 @@ class MPSBase:
                         )
                     left_dim = Bi.shape[2]
 
-                # Last
                 lastB = Bs[L - 1]
                 if C == 1:
                     if lastB.shape != (left_dim, d):
@@ -764,28 +792,19 @@ class MPSBase:
                             f"got {tuple(lastB.shape)}."
                         )
             else:
-                # Sanity: keep uniform shapes (raises if anything mismatches)
                 _validate_shapes_base(self.L, self.d, self.chi, self.out_dim, Bs)
 
-        # Restore requires_grad flags core-wise
+        # Restore requires_grad flags
         for i, B in enumerate(Bs):
             B.requires_grad_(req[i])
 
-        # Decide what chi should be for the returned object
         new_chi = max_bond if truncate else chi
 
-        if inplace:
-            self.set_As(Bs)
-            # Update chi to reflect the effective maximum bond dimension after truncation
-            self.chi = new_chi
-            self._invalidate_caches()
-            return self
-        else:
-            out = self._clone_with_As(Bs)
-            # Same chi update for the cloned object
-            out.chi = new_chi
-            out._invalidate_caches()
-            return out
+        out = self._clone_with_As(Bs)
+        out.chi = new_chi
+        out._invalidate_caches()
+        return out
+
 
 
     def save_to(self, path: str | os.PathLike, *, metadata: Optional[Dict[str, Any]] = None) -> None:
