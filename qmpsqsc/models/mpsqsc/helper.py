@@ -104,7 +104,7 @@ def build_qsc_from_mpstate(mpstate: MPState) -> MpsQsc:
     return mpsqsc
 
 
-def build_2qsc_from_mpstate(mpstate1: MPState, mpstate2: MPState) -> MpsQsc:
+def build_qsc_from_mpstates(mpstate1: MPState, mpstate2: MPState) -> MpsQsc:
     """
     Build a MpsQsc from an MPState.
     """
@@ -132,7 +132,7 @@ def build_2qsc_from_mpstate(mpstate1: MPState, mpstate2: MPState) -> MpsQsc:
     As[L1 - 1][:chi1, :, 0] = As1[L1 - 1]
     As[L1 - 1][chi1:, :, 1] = As2[L1 - 1]
 
-    mpsqsc = MpsQsc(L1, chi, d1, As, device=mpstate1.device, dtype=mpstate1.dtype)
+    mpsqsc = MpsQsc(L1, d1, As=As, device=mpstate1.device, dtype=mpstate1.dtype)
     return mpsqsc
 
 def add_mpstates(mpstates: List[MPState]) -> MPState:

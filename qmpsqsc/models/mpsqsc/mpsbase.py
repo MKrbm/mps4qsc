@@ -201,6 +201,11 @@ class MPSBase:
         """Initialize the MPS with a given initialization method."""
         raise NotImplementedError("Subclasses must implement this method.")
 
+    def set_requires_grad(self, requires_grad: bool = True):
+        for A in self.As:
+            A.requires_grad_(requires_grad)
+        self._invalidate_caches()
+
     def initialize(self, init: str = "random", seed: Optional[int] = None):
         """Random fan-in scaled initialization."""
         if init not in {"random"}:

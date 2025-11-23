@@ -46,7 +46,3 @@ class MPState(MPSBase):
             dtype=self.dtype,
             optimize=self.optimize
         )
-    
-    def set_requires_grad(self, requires_grad: bool = True):
-        for A in self.As:
-            A.requires_grad_(requires_grad)

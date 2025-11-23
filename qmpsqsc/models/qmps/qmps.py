@@ -538,7 +538,7 @@ class qMPS:
         )
         return oe.contract(eq, *tensors, optimize=path)
     
-    def predict(self, state: MPState, normalize: bool = True) -> torch.Tensor:
+    def predict(self, state: list[MPState], normalize: bool = True) -> torch.Tensor:
         """
         Predict the class of the input state.
         """

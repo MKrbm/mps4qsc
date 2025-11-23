@@ -131,3 +131,10 @@ class MpsQsc(MPSBase):
             optimize=optimize,
         )
         return mps
+    
+    def predict(self, states: List[MPState], eps: float = 1e-12) -> Tuple[torch.Tensor, torch.Tensor]:
+        amps_list = [self.contract_with_state(st) for st in states]  # each (2,)
+        amps_batch = torch.stack(amps_list, dim=0)                  # (B, 2)
+        abs_sq = (amps_batch.conj() * amps_batch).real
+        denom = abs_sq.sum(dim=-1, keepdim=True).clamp_min(eps)
+        return abs_sq / denom, denom.squeeze(-1)
