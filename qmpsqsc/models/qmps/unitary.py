@@ -30,7 +30,7 @@ class UnitaryTensor(nn.Module):
             raise ValueError(f"Invalid manifold type: {manifold}")
 
         self.manifold = mf
-        self.weight = u
+        self.weight = u.detach().clone()
         self.weight.requires_grad_(requires_grad)
         if t_shape is not None:
             self.t_shape = Size(t_shape)

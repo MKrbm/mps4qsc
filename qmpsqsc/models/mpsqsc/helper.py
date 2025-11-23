@@ -64,7 +64,24 @@ def build_product_state(
     mpstate = MPState(L=L, chi=1, d=d, As=As, device=device, dtype=dtype)
     return mpstate
 
+def build_classical_state(
+    L: int,
+    d: int,
+    bits: List[int],
+    device: torch.device = torch.device("cpu"),
+    dtype: torch.dtype = torch.float64,
+) -> MPState:
 
+    """
+    Build a product state for an MPState.
+    """
+
+    # create a state tensor of shape (L, d)
+    state = torch.zeros(L, d, device=device, dtype=dtype)
+    for i in range(L):
+        state[i, bits[i]] = 1.0
+
+    return build_product_state(L, d, state, device, dtype)
 
 
 
@@ -75,7 +92,7 @@ def build_qsc_from_mpstate(mpstate: MPState) -> MpsQsc:
     """
 
     As = mpstate.As
-    chi = mpstate.chi
+    chi = mpstate.chi_max
     d = mpstate.d
     L = mpstate.L
 
@@ -93,12 +110,12 @@ def build_2qsc_from_mpstate(mpstate1: MPState, mpstate2: MPState) -> MpsQsc:
     """
 
     As1 = mpstate1.As
-    chi1 = mpstate1.chi
+    chi1 = mpstate1.chi_max
     d1 = mpstate1.d
     L1 = mpstate1.L
 
     As2 = mpstate2.As
-    chi2 = mpstate2.chi
+    chi2 = mpstate2.chi_max
     d2 = mpstate2.d
     L2 = mpstate2.L
 
@@ -118,3 +135,181 @@ def build_2qsc_from_mpstate(mpstate1: MPState, mpstate2: MPState) -> MpsQsc:
     mpsqsc = MpsQsc(L1, chi, d1, As, device=mpstate1.device, dtype=mpstate1.dtype)
     return mpsqsc
 
+def add_mpstates(mpstates: List[MPState]) -> MPState:
+    """
+    Direct-sum (superposition) of multiple MPStates, allowing for
+    site-dependent bond dimensions.
+
+    Requirements:
+        * All states have the same device, dtype, L and d.
+        * Each state's cores have shapes:
+              As[0]      : (d, chi_0)
+              As[i]      : (chi_{i-1}, d, chi_i)  for i = 1 .. L-2
+              As[L-1]    : (chi_{L-2}, d)
+    """
+
+    if not mpstates:
+        raise ValueError("mpstates must be a non-empty list")
+
+    ref = mpstates[0]
+    dtype = ref.dtype
+    device = ref.device
+    L = ref.L
+    d = ref.d
+
+    # Consistency checks
+    for mp in mpstates[1:]:
+        if mp.dtype != dtype:
+            raise ValueError(
+                f"All mpstates must have the same dtype, got {[m.dtype for m in mpstates]}"
+            )
+        if mp.device != device:
+            raise ValueError(
+                f"All mpstates must have the same device, got {[m.device for m in mpstates]}"
+            )
+        if mp.L != L:
+            raise ValueError(
+                f"All mpstates must have the same L, got {[m.L for m in mpstates]}"
+            )
+        if mp.d != d:
+            raise ValueError(
+                f"All mpstates must have the same d, got {[m.d for m in mpstates]}"
+            )
+
+    if L <= 0:
+        raise ValueError(f"L must be positive, got {L}")
+
+    # Single-site case: just sum the local vectors
+    if L == 1:
+        A0 = mpstates[0].As[0].clone()
+        for mp in mpstates[1:]:
+            A0 = A0 + mp.As[0]
+
+        return MPState(
+            L=1,
+            chi=1,  # effectively no internal bond
+            d=d,
+            As=[A0],
+            device=device,
+            dtype=dtype,
+        )
+
+    num_states = len(mpstates)
+    num_bonds = L - 1
+
+    # Extract bond dimensions for each state
+    bond_dims_per_state: List[List[int]] = []
+    for mp in mpstates:
+        As = mp.As
+        if len(As) != L:
+            raise ValueError(
+                f"mpstate.As length {len(As)} does not match L={L}"
+            )
+
+        bonds: List[int] = []
+
+        # Bond between site 0 and 1
+        A0 = As[0]
+        if A0.ndim != 2:
+            raise ValueError(
+                f"Expected A[0] to have shape (d, chi_0), got {tuple(A0.shape)}"
+            )
+        bonds.append(A0.shape[1])
+
+        # Bonds between site i and i+1, for i = 1 .. L-2
+        for i in range(1, L - 1):
+            Ai = As[i]
+            if Ai.ndim != 3:
+                raise ValueError(
+                    f"Expected A[{i}] to have shape (chi_{i-1}, d, chi_i), "
+                    f"got {tuple(Ai.shape)}"
+                )
+            left = Ai.shape[0]
+            right = Ai.shape[2]
+
+            # Check that left dim matches previous bond
+            if left != bonds[i - 1]:
+                raise ValueError(
+                    f"Inconsistent left bond dimension at site {i}: "
+                    f"got {left}, expected {bonds[i - 1]}"
+                )
+
+            bonds.append(right)
+
+        # Last core: (chi_{L-2}, d)
+        A_last = As[L - 1]
+        if A_last.ndim != 2:
+            raise ValueError(
+                f"Expected A[L-1] to have shape (chi_{L-2}, d), "
+                f"got {tuple(A_last.shape)}"
+            )
+        if A_last.shape[0] != bonds[-1]:
+            raise ValueError(
+                f"Inconsistent left bond dimension at last site: "
+                f"got {A_last.shape[0]}, expected {bonds[-1]}"
+            )
+
+        bond_dims_per_state.append(bonds)
+
+    # New bond dimensions per bond = sum over states
+    new_bonds = [
+        sum(bonds[b] for bonds in bond_dims_per_state)
+        for b in range(num_bonds)
+    ]
+
+    # Use max bond dimension as the 'chi' attribute for the new state
+    new_chi = max(new_bonds) if new_bonds else 1
+
+    # Allocate new cores with per-bond chi's
+    new_As = _construct_core_As(
+        L=L,
+        d=d,
+        chi=new_bonds,
+        out_dim=1,
+        device=device,
+        dtype=dtype,
+    )
+
+    # Compute per-state offsets along each bond (for block-diagonal embedding)
+    offsets = [[0] * num_bonds for _ in range(num_states)]
+    for b in range(num_bonds):
+        cur = 0
+        for s in range(num_states):
+            offsets[s][b] = cur
+            cur += bond_dims_per_state[s][b]
+
+    # Fill new_As with blocks from each state
+    for s, mp in enumerate(mpstates):
+        As = mp.As
+        bonds = bond_dims_per_state[s]
+        offs = offsets[s]
+
+        # Site 0: (d, chi_0)
+        l = offs[0]
+        r = l + bonds[0]
+        new_As[0][:, l:r] = As[0]
+
+        # Interior sites: 1 .. L-2
+        for i in range(1, L - 1):
+            left_bond = i - 1
+            right_bond = i
+            l0 = offs[left_bond]
+            r0 = l0 + bonds[left_bond]
+            l1 = offs[right_bond]
+            r1 = l1 + bonds[right_bond]
+            new_As[i][l0:r0, :, l1:r1] = As[i]
+
+        # Last site: L-1, (chi_{L-2}, d)
+        last_left_bond = num_bonds - 1  # = L-2
+        l = offs[last_left_bond]
+        r = l + bonds[last_left_bond]
+        new_As[L - 1][l:r, :] = As[L - 1]
+
+    new_mpstate = MPState(
+        L=L,
+        d=d,
+        As=new_As,
+        device=device,
+        dtype=dtype,
+    )
+    return new_mpstate

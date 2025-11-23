@@ -1,6 +1,6 @@
 
 from __future__ import annotations
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple, Callable
 import math
 import torch
 import os
@@ -75,7 +75,11 @@ class qMPS:
             w[0] = 1.0
         for w in self.weights:
             w.requires_grad_(True)
-
+        
+        # Desicion boundary
+        self.D = torch.tensor(0.5, device=self.device, dtype=self.dtype)
+        self.D.requires_grad_(True)
+        
     # ---------------------------------------------------------------------
     # Utilities
     # ---------------------------------------------------------------------
@@ -98,6 +102,13 @@ class qMPS:
         if not torch.allclose(Uh @ U, eye, atol=atol, rtol=rtol):
             err = torch.linalg.norm(Uh @ U - eye, ord="fro").item()
             raise ValueError(f"U[{i}] fails U^† U ≈ I: ||U^† U - I||_F = {err:.3e}")
+    
+    def set_weights(self, w : float) -> None:
+        # w has to be (0, 1)
+        if w < 0 or w > 1:
+            raise ValueError(f"w has to be (0, 1), got {w}.")
+        for w_i in self.weights:
+            w_i.data[1:] = w
 
     # ---------------------------------------------------------------------
     # Naming rule + circuit equation
@@ -415,7 +426,7 @@ class qMPS:
         )
 
         shape_sig = tuple(tuple(T.shape) for T in tensors)
-        if self._cls_cache.shape_sig != shape_sig:
+        if self._cls_cache.shape_sig is None:
             path, _ = oe.contract_path(eq_full, *tensors, optimize=self.optimize)
             self._cls_cache.eq = eq_full
             self._cls_cache.path = path
@@ -526,3 +537,13 @@ class qMPS:
             [w for w in self.weights]
         )
         return oe.contract(eq, *tensors, optimize=path)
+    
+    def predict(self, state: MPState, normalize: bool = True) -> torch.Tensor:
+        """
+        Predict the class of the input state.
+        """
+        rho = self._contract_circuit_with_state_ae(state)
+        diag = torch.diag(rho)
+        if normalize:
+            diag = diag / torch.sum(diag)
+        return diag

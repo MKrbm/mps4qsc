@@ -12,20 +12,19 @@ class MPState(MPSBase):
     def __init__(
         self,
         L: int,
-        chi: int,
         d: int,
+        chi: int | Sequence[int] | None = None,
         As: Optional[List[torch.Tensor]] = None,
         device: Optional[torch.device | str] = None,
-        dtype: torch.dtype = torch.float32,
+        dtype: torch.dtype = torch.float64,
         init: str = "random",
         seed: Optional[int] = None,
         optimize: str = "random-greedy",
     ):
         super().__init__(
-            L=L, chi=chi, d=d, out_dim=1,
+            L=L, d=d, out_dim=1, chi=chi,
             As=As, device=device, dtype=dtype,
             init=init, seed=seed, optimize=optimize,
-            requires_grad=False,
         )
 
     # Back-compat: ⟨other|self⟩ API from your previous code
@@ -34,15 +33,20 @@ class MPState(MPSBase):
         Backward-compatible alias: returns ⟨other|self⟩ (scalar).
         Prefer: `other.overlap(self)` (which is the same).
         """
-        return other.overlap(self, conjugate_self=True)
+        norm1 = self.norm()
+        norm2 = other.norm()
+        return other.overlap(self, conjugate_self=True) / (norm1 * norm2)
 
     def _clone_with_As(self, As_new: Sequence[torch.Tensor], new_chi: int | None = None) -> "MPState":
         return MPState(
             L=self.L,
-            chi=new_chi if new_chi is not None else self.chi,
             d=self.d,
             As=[A.clone().detach() for A in As_new],
             device=self.device,
             dtype=self.dtype,
             optimize=self.optimize
         )
+    
+    def set_requires_grad(self, requires_grad: bool = True):
+        for A in self.As:
+            A.requires_grad_(requires_grad)
