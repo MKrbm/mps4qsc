@@ -11,3 +11,7 @@ __pycache__/
 *.pyzzzz
 *.pyzzzzz
 *.pyzzzzzz
+
+
+*.pth
+*.pt
