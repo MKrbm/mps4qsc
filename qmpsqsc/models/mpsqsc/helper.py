@@ -110,27 +110,33 @@ def build_qsc_from_mpstates(mpstate1: MPState, mpstate2: MPState) -> MpsQsc:
     """
 
     As1 = mpstate1.As
-    chi1 = mpstate1.chi_max
     d1 = mpstate1.d
     L1 = mpstate1.L
 
     As2 = mpstate2.As
-    chi2 = mpstate2.chi_max
     d2 = mpstate2.d
     L2 = mpstate2.L
 
     assert L1 == L2
     assert d1 == d2
 
-    chi = chi1 + chi2
-    As = _construct_core_As(L1, d1, chi, out_dim=2, device=mpstate1.device, dtype=mpstate1.dtype)
-    As[0][:, :chi1] = As1[0]
-    As[0][:, chi1:] = As2[0]
+    # construct chi list from mpstate1 and mpstate2
+    chi1 = mpstate1._chi_bonds
+    chi2 = mpstate2._chi_bonds
+    chi_bonds: List[int] = []
+    for c1, c2 in zip(chi1, chi2):
+        chi_bonds.append(c1 + c2)
+    
+
+    As = _construct_core_As(L1, d1, chi_bonds, out_dim=2, device=mpstate1.device, dtype=mpstate1.dtype)
+
+    As[0][:, :chi1[0]] = As1[0]
+    As[0][:, chi1[0]:] = As2[0]
     for i in range(1, L1 - 1):
-        As[i][:chi1, :, :chi1] = As1[i]
-        As[i][chi1:, :, chi1:] = As2[i]
-    As[L1 - 1][:chi1, :, 0] = As1[L1 - 1]
-    As[L1 - 1][chi1:, :, 1] = As2[L1 - 1]
+        As[i][:chi1[i-1], :, :chi1[i]] = As1[i]
+        As[i][chi1[i-1]:, :, chi1[i]:] = As2[i]
+    As[L1 - 1][:chi1[L1 - 2], :, 0] = As1[L1 - 1]
+    As[L1 - 1][chi1[L1 - 2]:, :, 1] = As2[L1 - 1]
 
     mpsqsc = MpsQsc(L1, d1, As=As, device=mpstate1.device, dtype=mpstate1.dtype)
     return mpsqsc

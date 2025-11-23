@@ -77,7 +77,7 @@ def test_compress_mpstate_improves_or_matches_truncation():
     phi0.normalize(inplace=True)
 
     fid0 = _fidelity(psi, phi0)
-    phi1, fid1 = compress_mpstate(psi, target_chi=chi_small, max_sweeps=10, tol_theta_diff=1e-8)
+    phi1, fid1 = compress_mpstate(psi, target_chi=chi_small, n_sweeps=10, adam_steps=10)
     fid1 = _fidelity(psi, phi1)
 
     # Basic sanity: bond dimension preserved

@@ -15,7 +15,6 @@ class UnitaryTensor(nn.Module):
         u: torch.Tensor,
         t_shape: Size | Tuple[int, ...] | None = None,
         manifold: ManifoldType = ManifoldType.CANONICAL,
-        requires_grad: bool = True,
     ):
         super().__init__()
         if manifold == ManifoldType.EXACT:
@@ -31,7 +30,6 @@ class UnitaryTensor(nn.Module):
 
         self.manifold = mf
         self.weight = u.detach().clone()
-        self.weight.requires_grad_(requires_grad)
         if t_shape is not None:
             self.t_shape = Size(t_shape)
         else:
@@ -40,3 +38,8 @@ class UnitaryTensor(nn.Module):
     @property
     def tensor(self) -> torch.Tensor:
         return self.weight.reshape(self.t_shape)
+    
+    def _to(self, device: torch.device | str | None = None, dtype: torch.dtype | None = None) -> None:
+        if device is None and dtype is None:
+            raise ValueError("At least one of 'device' or 'dtype' must be provided to .to().")
+        self.weight = self.weight.to(device=device, dtype=dtype).detach()

@@ -68,7 +68,7 @@ class MPSBase:
         self._ovlp_cache = _EqAndPathCache()   # for overlap(...)
 
         # Per-bond bond dimensions (None means "uniform chi=self.chi")
-        self._chi_bonds: Optional[list[int]] = None
+        self._chi_bonds: List[int] = []
 
         # Determine chi / chi_bonds depending on whether As are provided
         if As is None:
@@ -77,7 +77,7 @@ class MPSBase:
                 raise ValueError("Either `chi` (int or list) or `As` must be provided.")
             if isinstance(chi, int):
                 chi_max = chi
-                chi_bonds: Optional[list[int]] = None  # uniform
+                chi_bonds: List[int] = [chi] * (L - 1)  # uniform
             else:
                 chi_bonds = list(chi)
                 if len(chi_bonds) != L - 1:
@@ -402,19 +402,21 @@ class MPSBase:
             return n2
         return torch.sqrt(torch.clamp(n2, min=0))
 
-    def normalize(self, inplace: bool = True, norm: Optional[float] = None) -> Self:
+    def normalize(self, inplace: bool = True, norm: Optional[float | torch.Tensor] = None) -> Self:
         """
         Scale cores so that `norm() == 1` by multiplying each core by s = n^(-1/L).
         Works for both C==1 and C>1.
         If norm is provided, rescale the cores based on the provided norm.
         """
-        nrm = self.norm(squared=False) if norm is None else torch.tensor(norm, device=self.device, dtype=self.dtype).detach().clone()
+        nrm = self.norm(squared=False) if norm is None else norm
+        if not isinstance(nrm, torch.Tensor):
+            nrm = torch.tensor(nrm, device=self.device, dtype=self.dtype)
         if not torch.isfinite(nrm):
             raise ValueError("Norm is not finite; cannot normalize.")
         if float(nrm) == 0.0:
             raise ValueError("Zero-norm state; cannot normalize.")
 
-        s = torch.pow(nrm, -1.0 / float(self.L)).to(self.device, self.dtype)
+        s = torch.pow(nrm, -1.0 / float(self.L))
         scaled = [A * s for A in self.As]
 
         if inplace:
@@ -826,6 +828,34 @@ class MPSBase:
     
     def copy(self) -> Self:
         return self._clone_with_As(self.As)
+    
+    def to(self, device: torch.device | str | None = None, dtype: torch.dtype | None = None) -> Self:
+        if device is None and dtype is None:
+            raise ValueError("At least one of 'device' or 'dtype' must be provided to .to().")
+        return self._clone_with_As([A.to(device=device, dtype=dtype) for A in self.As])
+    
+    def __mul__(self, scalar: float | complex | torch.Tensor) -> Self:
+        """
+        Scalar multiplication: MPS * scalar.
+        Returns a new instance, does not modify in-place.
+        """
+        if not isinstance(scalar, (int, float, complex, torch.Tensor)):
+            return NotImplemented
+        if not isinstance(scalar, torch.Tensor):
+            scalar = torch.tensor(scalar, device=self.device, dtype=self.dtype)
+        phase = scalar / torch.abs(scalar)
+        # Normalize a copy (returns new instance), then multiply first core by phase
+        obj = self._clone_with_As(self.As)
+        obj = obj.normalize(inplace=False, norm=1 / torch.abs(scalar))
+        As_new = list(obj.As)
+        As_new[0] = As_new[0] * phase
+        return self._clone_with_As(As_new)
+
+    def __rmul__(self, scalar: float | complex | torch.Tensor) -> Self:
+        """
+        Scalar multiplication: scalar * MPS
+        """
+        return self.__mul__(scalar)
 
 def _validate_shapes_base(
     L: int,

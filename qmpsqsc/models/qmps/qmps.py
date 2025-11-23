@@ -4,9 +4,8 @@ from typing import List, Optional, Sequence, Tuple, Callable
 import math
 import torch
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Self
 import opt_einsum as oe  # type: ignore[import-untyped]
-
 from ..opt_einsum_utils import GetSymbolFn, _EqAndPathCache
 from ..mpsqsc.mpstate import MPState
 from .unitary import UnitaryTensor
@@ -57,7 +56,8 @@ class qMPS:
         self.device = torch.device(device) if device is not None else torch.device("cpu")
         self.dtype = Us[0].dtype
         self.optimize = optimize
-        self._cls_cache = _EqAndPathCache()
+        self._ae_cache = _EqAndPathCache()
+        self._pt_cache = _EqAndPathCache() # for partial trace contraction
 
         # --- FIX: default last_unitary must be (2*out_dim)×(2*out_dim) so it reshapes to (2, C, 2, C)
         if last_unitary is None:
@@ -73,12 +73,19 @@ class qMPS:
         self.weights.append(torch.zeros(2, dtype=Us[0].dtype, device=Us[0].device))
         for w in self.weights:
             w[0] = 1.0
-        for w in self.weights:
-            w.requires_grad_(True)
         
         # Desicion boundary
         self.D = torch.tensor(0.5, device=self.device, dtype=self.dtype)
-        self.D.requires_grad_(True)
+    
+    def set_requires_grad(self, requires_grad: bool = True):
+        self.D.requires_grad_(requires_grad)
+        for U in self.U4:
+            U.weight.requires_grad_(requires_grad)
+        self.last_unitary.weight.requires_grad_(requires_grad)
+    
+    def unitaries(self) -> List[torch.Tensor]:
+        return [U.weight for U in self.U4] + [self.last_unitary.weight]
+    
         
     # ---------------------------------------------------------------------
     # Utilities
@@ -171,7 +178,8 @@ class qMPS:
         # Last op on right rail
         right_pieces.append(syms["anc"][L - 1] + syms["cls_R"] + syms["bond_R"][L - 2]) # type: ignore
 
-        eq = ",".join(left_pieces) + "," + ",".join(right_pieces) + "->" + syms["cls_L"] + syms["cls_R"] # type: ignore
+        eq = ",".join(left_pieces) + "," + ",".join(right_pieces) + "->" + syms["cls_L"] # type: ignore
+        eq = eq.replace(syms["cls_R"], syms["cls_L"]) #type: ignore
         return eq, syms, sym
 
     # ---------------------------------------------------------------------
@@ -326,16 +334,16 @@ class qMPS:
         )
 
         shape_sig = tuple(tuple(T.shape) for T in tensors)
-        if self._cls_cache.shape_sig != shape_sig:
+        if self._pt_cache.shape_sig != shape_sig:
             path, _ = oe.contract_path(eq_full, *tensors, optimize=self.optimize)
-            self._cls_cache.eq = eq_full
-            self._cls_cache.path = path
-            self._cls_cache.shape_sig = shape_sig
+            self._pt_cache.eq = eq_full
+            self._pt_cache.path = path
+            self._pt_cache.shape_sig = shape_sig
 
         # Sanity
-        if self._cls_cache.eq is None or self._cls_cache.path is None:
+        if self._pt_cache.eq is None or self._pt_cache.path is None:
             raise RuntimeError("Classifier equation/path was not built.")
-        return self._cls_cache.eq, self._cls_cache.path
+        return self._pt_cache.eq, self._pt_cache.path
 
     # ---------------------------------------------------------------------
     # Public contraction
@@ -426,16 +434,16 @@ class qMPS:
         )
 
         shape_sig = tuple(tuple(T.shape) for T in tensors)
-        if self._cls_cache.shape_sig is None:
+        if self._ae_cache.shape_sig is None:
             path, _ = oe.contract_path(eq_full, *tensors, optimize=self.optimize)
-            self._cls_cache.eq = eq_full
-            self._cls_cache.path = path
-            self._cls_cache.shape_sig = shape_sig
+            self._ae_cache.eq = eq_full
+            self._ae_cache.path = path
+            self._ae_cache.shape_sig = shape_sig
 
         # Sanity
-        if self._cls_cache.eq is None or self._cls_cache.path is None:
+        if self._ae_cache.eq is None or self._ae_cache.path is None:
             raise RuntimeError("Classifier equation/path was not built.")
-        return self._cls_cache.eq, self._cls_cache.path
+        return self._ae_cache.eq, self._ae_cache.path
 
     def _build_equation_ae(self) -> tuple[str, dict[str, List[str] | str], GetSymbolFn]:
         """
@@ -504,8 +512,9 @@ class qMPS:
             + ",".join(syms["anc"])
             + "->"
             + syms["cls_L"]
-            + syms["cls_R"]
         )  # type: ignore
+
+        eq = eq.replace(syms["cls_R"], syms["cls_L"]) #type: ignore
         return eq, syms, sym
 
 
@@ -536,14 +545,142 @@ class qMPS:
             [U.tensor.conj() for U in self.U4] + [last_operator.conj()] +
             [w for w in self.weights]
         )
-        return oe.contract(eq, *tensors, optimize=path)
+        contract = oe.contract(eq, *tensors, optimize=path)
+        # check if this is real valued
+        assert torch.allclose(contract.imag, torch.zeros_like(contract.imag), atol=1e-12, rtol=1e-12)
+        return contract.real
     
-    def predict(self, state: list[MPState], normalize: bool = True) -> torch.Tensor:
+    def predict(self, states: list[MPState], eps: float = 1e-12, normalize: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Predict the class of the input state.
         """
-        rho = self._contract_circuit_with_state_ae(state)
-        diag = torch.diag(rho)
+        rho_list = [self._contract_circuit_with_state_ae(state) for state in states]
+        rho_batch = torch.stack(rho_list, dim=0)
+        denom = rho_batch.sum(dim=-1, keepdim=True).clamp_min(eps)
+        rho_batch = rho_batch / denom
         if normalize:
-            diag = diag / torch.sum(diag)
-        return diag
+            rho_batch = rho_batch / torch.sum(rho_batch, dim=-1, keepdim=True)
+        return rho_batch, denom.squeeze(-1)
+
+    def save_to(self, path: str | os.PathLike) -> None:
+        """
+        Serialize the qMPS instance to disk.
+
+        Notes
+        -----
+        We store:
+          • basic hyperparameters (L, chi, d, out_dim, optimize)
+          • reshaped 4-leg unitaries U4[i].tensor
+          • last_unitary in 4-leg shape (2, C, 2, C)
+          • adiabatic-encoding weights
+          • decision boundary D
+        All tensors are moved to CPU and detached.
+        """
+        payload: dict[str, Any] = {
+            "format": "qmps_v1",
+            "class_name": self.__class__.__name__,
+            "L": self.L,
+            "chi": self.chi,
+            "d": self.d,
+            "out_dim": self.out_dim,
+            "optimize": self.optimize,
+            "Us": [U.weight.detach().cpu() for U in self.U4],
+            "last_unitary": self.last_unitary.weight.detach().cpu(),  # (2, C, 2, C)
+            "weights": [w.detach().cpu() for w in self.weights],
+            "D": self.D.detach().cpu(),
+        }
+        torch.save(payload, path)
+
+    # ------------------------------------------------------------------
+    # Deserialization helpers
+    # ------------------------------------------------------------------
+    @classmethod
+    def from_payload(cls, payload: Dict[str, Any]) -> "qMPS":
+        """
+        Reconstruct a qMPS instance from a serialized payload produced
+        by `save_to`.
+        """
+        fmt = payload.get("format", None)
+        if fmt != "qmps_v1":
+            raise ValueError(f"Unsupported qMPS format: {fmt!r}")
+
+        L: int = payload["L"]
+        chi: int = payload["chi"]
+        d: int = payload["d"]
+        out_dim: int = payload["out_dim"]
+        optimize: str = payload.get("optimize", "random-greedy")
+
+        Us: List[torch.Tensor] = payload["Us"]
+        if len(Us) != L - 1:
+            raise ValueError(
+                f"Payload has {len(Us)} Us tensors, but L={L} "
+                f"requires L-1={L-1}."
+            )
+
+        last_unitary = payload["last_unitary"]
+        # Instantiate on CPU (caller can move to GPU later if desired)
+        device = torch.device("cpu")
+        qmps = cls(
+            L=L,
+            chi=chi,
+            d=d,
+            Us=Us,
+            last_unitary=last_unitary,
+            out_dim=out_dim,
+            As=None,
+            device=device,
+            seed=None,
+            optimize=optimize,
+        )
+
+        # Restore weights and decision boundary onto the instance's device/dtype
+        weights_payload: List[torch.Tensor] = payload["weights"]
+        if len(weights_payload) != len(qmps.weights):
+            raise ValueError(
+                f"Payload has {len(weights_payload)} weights, but "
+                f"constructed qMPS expects {len(qmps.weights)}."
+            )
+        # qmps.weights = [
+        #     w.to(device=qmps.device, dtype=qmps.dtype) for w in weights_payload
+        # ]
+        for w, w_payload in zip(qmps.weights, weights_payload):
+            w.data[:] = w_payload.data[:]
+
+        D_payload: torch.Tensor = payload["D"]
+        qmps.D = D_payload.to(device=qmps.device, dtype=qmps.dtype)
+
+        return qmps
+
+    @classmethod
+    def load_from(cls, path: str | os.PathLike) -> "qMPS":
+        """
+        Load a qMPS instance from disk.
+
+        Currently loads everything onto CPU; if you want it on GPU,
+        call `.to(device)` on the returned instance (after you implement
+        such a method) or move individual tensors manually.
+        """
+        payload = torch.load(path, map_location="cpu")
+        return cls.from_payload(payload)
+    
+    def to(self, device: torch.device | str | None = None, dtype: torch.dtype | None = None) -> Self:
+        if device is None and dtype is None:
+            raise ValueError("At least one of 'device' or 'dtype' must be provided to .to().")
+        for i, U in enumerate(self.U4):
+            self.U4[i]._to(device=device, dtype=dtype)
+        self.last_unitary._to(device=device, dtype=dtype)
+        for w in self.weights:
+            w.data = w.data.to(device=device, dtype=dtype).detach()
+        self.D = self.D.to(device=device, dtype=dtype)
+        if dtype is not None:
+            self.dtype = dtype
+        if device is not None:
+            self.device = torch.device(device)
+        
+        self._invalidate_cache()
+        return self
+    
+    def _invalidate_cache(self) -> None:
+        self._ae_cache.invalidate()
+        self._pt_cache.invalidate()
+

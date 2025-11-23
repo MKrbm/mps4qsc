@@ -1,6 +1,18 @@
 import torch
-from typing import List, Tuple, Iterator
+import random
+from typing import List, Tuple, Iterator, Literal, Dict
 from ..mpsqsc.mpstate import MPState
+
+X = torch.tensor([[0, 1], [1, 0]], dtype=torch.complex128)
+Y = torch.tensor([[0, 1j], [-1j, 0]], dtype=torch.complex128)
+Z = torch.tensor([[1, 0], [0, -1]], dtype=torch.complex128)
+
+FLIP_TENSORS: Dict[str, torch.Tensor] = {
+    "X": X,
+    "Y": Y,
+    "Z": Z,
+}
+
 
 @torch.no_grad()
 def create_ghz_rho_batch_qsc(
@@ -9,7 +21,9 @@ def create_ghz_rho_batch_qsc(
     mps_alldown: MPState,
     batch_size: int,
     error_rate: float,
-) -> Iterator[Tuple[List[MPState], torch.Tensor, List[int]]]:
+    flip : Literal["X", "Y", "Z"] = "X",
+    random_flip : bool = False,
+) -> Iterator[Tuple[List[MPState], torch.Tensor, List[str]]]:
     """
     Create an infinite generator of training batches for GHZ vs rho with local bit-flip errors.
 
@@ -30,6 +44,15 @@ def create_ghz_rho_batch_qsc(
                 1 -> rho   (product states: all-up / all-down)
     """
 
+    def get_flip_tensor() -> Tuple[torch.Tensor, str]:
+        if random_flip:
+            # randomly select string "X", "Y", or "Z" uniformly using python's module random
+            _flip = random.choice(["X", "Y", "Z"])
+            return FLIP_TENSORS[_flip], _flip
+        else:
+            return FLIP_TENSORS[flip], flip
+
+
     def _flip_sites_in_mps(mps_state, site_indices):
         """
         In-place flip of given sites in an MPS.
@@ -38,18 +61,19 @@ def create_ghz_rho_batch_qsc(
             - mps_state[site] is a torch.Tensor
             - physical index is dimension 1 and has size 2
         """
-        As = mps_state.As
-        X = torch.tensor([[0, 1], [1, 0]], device=As[0].device, dtype=As[0].dtype)
         L = len(mps_state.As)
+        F, _flip = get_flip_tensor()
         for i in site_indices:
             A = mps_state.As[i]
             if i != 0 and i != L - 1:
-                A.data[:] = torch.einsum("iaj, ab -> ibj", A.data, X)
+                A.data[:] = torch.einsum("iaj, ab -> ibj", A.data, F)
             elif i == 0:
-                A.data[:] = torch.einsum("aj, ab -> bj", A.data, X)
+                A.data[:] = torch.einsum("aj, ab -> bj", A.data, F)
             else:  # ind == L - 1
-                A.data[:] = torch.einsum("ia, ab -> ib", A.data, X)
+                A.data[:] = torch.einsum("ia, ab -> ib", A.data, F)
             mps_state.As[i] = A
+        
+        return _flip
 
     device = mpsghz.device
     num_sites = mpsghz.L
@@ -75,7 +99,7 @@ def create_ghz_rho_batch_qsc(
 
         states: List = []
         labels: List[int] = []
-        errors: List[int] = [] # 0: no error, 1: error
+        errors: List[str] = [] # "I": no error, "X": X error, "Y": Y error, "Z": Z error
 
         for idx in range(batch_size):
             code = int(type_codes[idx].item())
@@ -93,11 +117,11 @@ def create_ghz_rho_batch_qsc(
             state = base_state.copy()
             # Randomly flip a site with probability error_rate for this sample
             if torch.rand(1).item() < error_rate:
-                errors.append(1)
                 site = torch.randint(0, num_sites, (1,)).item()
-                _flip_sites_in_mps(state, [site])
+                flip = _flip_sites_in_mps(state, [site])
+                errors.append(flip)
             else:
-                errors.append(0)
+                errors.append("I")
             states.append(state)
             labels.append(label)
 

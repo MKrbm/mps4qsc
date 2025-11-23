@@ -121,15 +121,10 @@ def test_contract_circuit_with_state_partial_trace_is_density_matrix():
     mpstate = MPState(L=L, chi=chi_state, d=d, init="random", seed=42, dtype=torch.complex128)
 
     vals = qmpsqsc._contract_circuit_with_state_partial_trace(mpstate)
-    # check if vlas is a density matrix
-    #  positivity check
-    assert torch.allclose(vals, vals.mH)
-    E, V = torch.linalg.eigh(vals)
-    assert torch.all(E >= 0)
 
     # trace check
     norm = mpstate.norm()
-    assert torch.allclose(torch.trace(vals), torch.tensor(norm**2, dtype=vals.dtype))
+    assert torch.allclose(torch.sum(vals), torch.tensor(norm**2, dtype=vals.dtype))
 
 
 def test_contract_circuit_with_state_ae_same_as_mpsqsc():
@@ -149,10 +144,8 @@ def test_contract_circuit_with_state_ae_same_as_mpsqsc():
     vals_ae = qmpsqsc._contract_circuit_with_state_ae(mpstate)
     pred_mps = mpsqsc.contract_with_state(mpstate)
 
-    # extract diagonal parts of vals_ae
-    pred_ae = vals_ae.real.diagonal(dim1=0, dim2=1)
     # normalize so that summation is 1
-    pred_ae = pred_ae / torch.sum(pred_ae)
+    pred_ae = vals_ae / torch.sum(vals_ae)
     # normalize pred_mps so that norm is 1
     pred_mps = pred_mps / torch.linalg.norm(pred_mps)
     pred_mps = torch.abs(pred_mps) ** 2

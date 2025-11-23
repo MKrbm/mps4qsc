@@ -42,7 +42,7 @@ class MPState(MPSBase):
             L=self.L,
             d=self.d,
             As=[A.clone().detach() for A in As_new],
-            device=self.device,
-            dtype=self.dtype,
+            device=As_new[0].device,
+            dtype=As_new[0].dtype,
             optimize=self.optimize
         )

@@ -47,8 +47,8 @@ class MpsQsc(MPSBase):
             L=self.L,
             d=self.d,
             As=[A.clone().detach() for A in As_new],
-            device=self.device,
-            dtype=self.dtype,
+            device=As_new[0].device,
+            dtype=As_new[0].dtype,
             optimize=self.optimize,
             out_dim=self.out_dim
         )
@@ -138,3 +138,4 @@ class MpsQsc(MPSBase):
         abs_sq = (amps_batch.conj() * amps_batch).real
         denom = abs_sq.sum(dim=-1, keepdim=True).clamp_min(eps)
         return abs_sq / denom, denom.squeeze(-1)
+    
