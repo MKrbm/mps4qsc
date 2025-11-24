@@ -1,17 +1,29 @@
-# Python
+# Python bytecode and cache directories
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
-*.pyw
-*.pyz
-*.pywz
-*.pyzz
-*.pyzzz
-*.pyzzzz
-*.pyzzzzz
-*.pyzzzzzz
 
+# Virtual environments
+.env
+.venv
+env/
+venv/
 
-*.pth
+# Jupyter artifacts
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# Notebook outputs and data artifacts
 *.pt
+*.pth
+*.pkl
+*.npz
+*.npy
+*.log
+*.out
+
+# IDE and OS metadata
+.vscode/
+.idea/
+.DS_Store
