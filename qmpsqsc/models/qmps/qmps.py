@@ -73,7 +73,10 @@ class qMPS:
         self.weights.append(torch.zeros(2, dtype=Us[0].dtype, device=Us[0].device))
         for w in self.weights:
             w[0] = 1.0
-        
+
+        self.current_weight: float = 0.0
+        self.training: bool = True
+
         # Desicion boundary
         self.D = torch.tensor(0.5, device=self.device, dtype=self.dtype)
     
@@ -116,6 +119,17 @@ class qMPS:
             raise ValueError(f"w has to be (0, 1), got {w}.")
         for w_i in self.weights:
             w_i.data[1:] = w
+        self.current_weight = float(w)
+
+    def train(self, mode: bool = True):
+        self.training = mode
+        for U in self.U4:
+            U.train(mode)
+        self.last_unitary.train(mode)
+        return self
+
+    def eval(self):
+        return self.train(False)
 
     # ---------------------------------------------------------------------
     # Naming rule + circuit equation
